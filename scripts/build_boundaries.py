@@ -58,8 +58,8 @@ def fetch_municipio_mesorregiao() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def fetch_municipios_geobr() -> gpd.GeoDataFrame:
-    gdf = geobr.read_municipality(code_muni="SC", year=MUNICIPALITY_YEAR)
+def fetch_municipios_geobr(*, simplified: bool) -> gpd.GeoDataFrame:
+    gdf = geobr.read_municipality(code_muni="SC", year=MUNICIPALITY_YEAR, simplified=simplified)
     gdf = gdf.rename(columns={"code_muni": "cd_municipio_ibge", "name_muni": "nm_municipio_ibge"})
     gdf["cd_municipio_ibge"] = gdf["cd_municipio_ibge"].astype("int64")
     return gdf[["cd_municipio_ibge", "nm_municipio_ibge", "geometry"]]
@@ -77,8 +77,8 @@ def main() -> None:
     meso_lookup = fetch_municipio_mesorregiao()
     print(f"  {len(meso_lookup)} municípios, {meso_lookup['cd_mesorregiao'].nunique()} mesorregiões")
 
-    print("Baixando polígonos de município via geobr...")
-    municipios = fetch_municipios_geobr()
+    print("Baixando polígonos de município via geobr (simplificado, pro mapa de município)...")
+    municipios = fetch_municipios_geobr(simplified=True)
     print(f"  {len(municipios)} polígonos de município")
 
     # --- validação ---
@@ -108,9 +108,23 @@ def main() -> None:
     print(f"Salvo {DATA_GEO / 'sc_municipios.geojson'}")
 
     # --- dissolve por mesorregião ---
-    mesorregioes = municipios.dissolve(by="cd_mesorregiao", as_index=False).loc[
+    # Dissolve em cima do polígono SIMPLIFICADO deixa "costura" visível entre
+    # municípios vizinhos (o geobr simplifica cada município separadamente, então
+    # bordas compartilhadas não ficam mais idênticas depois). Usa a geometria
+    # completa (sem simplificação) só pra esse dissolve, e simplifica o
+    # RESULTADO (já são só 6 polígonos, sem fronteira interna pra rasgar).
+    print("Baixando polígonos de município via geobr (resolução completa, só pro dissolve)...")
+    municipios_full = fetch_municipios_geobr(simplified=False)
+    municipios_full = municipios_full.merge(
+        municipios[["cd_municipio_ibge", "cd_mesorregiao", "nm_mesorregiao"]], on="cd_municipio_ibge", how="left"
+    )
+
+    mesorregioes = municipios_full.dissolve(by="cd_mesorregiao", as_index=False).loc[
         :, ["cd_mesorregiao", "nm_mesorregiao", "geometry"]
     ]
+    # tolerância em graus (~100m) -- suficiente pra reduzir o tamanho do arquivo
+    # sem introduzir buraco/gap perceptível no nível de zoom da região.
+    mesorregioes["geometry"] = mesorregioes.geometry.simplify(0.001, preserve_topology=True)
     assert len(mesorregioes) == 6, f"esperava 6 mesorregiões após o dissolve, achei {len(mesorregioes)}"
     invalid = ~mesorregioes.geometry.is_valid
     assert not invalid.any(), f"geometrias inválidas após dissolve: {mesorregioes.loc[invalid, 'nm_mesorregiao'].tolist()}"

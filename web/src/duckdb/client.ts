@@ -11,7 +11,14 @@ const MANUAL_BUNDLES: duckdb.DuckDBBundles = {
   eh: { mainModule: duckdbWasmEh, mainWorker: ehWorker },
 };
 
-const DATA_FILES = ["candidatos.parquet", "agg_municipio.parquet", "agg_mesorregiao.parquet"];
+const DATA_FILES = [
+  "candidatos.parquet",
+  "partidos.parquet",
+  "agg_municipio.parquet",
+  "agg_mesorregiao.parquet",
+  "agg_municipio_partido.parquet",
+  "agg_mesorregiao_partido.parquet",
+];
 
 let dbPromise: Promise<duckdb.AsyncDuckDB> | null = null;
 
@@ -34,4 +41,24 @@ export function getDuckDB(): Promise<duckdb.AsyncDuckDB> {
     })();
   }
   return dbPromise;
+}
+
+// Partições de seção são carregadas sob demanda (só quando o zoom pede o nível
+// de detalhe máximo) e ficam registradas depois -- trocar de candidato dentro
+// do mesmo cargo/turno não deveria refazer o fetch.
+const registeredSecaoPartitions = new Set<string>();
+
+export async function registerSecaoPartition(
+  db: duckdb.AsyncDuckDB,
+  cargoSlug: string,
+  turno: number,
+): Promise<string> {
+  const name = `secoes_${cargoSlug}_${turno}.parquet`;
+  if (!registeredSecaoPartitions.has(name)) {
+    const res = await fetch(`/data/secoes/cargo_slug=${cargoSlug}/turno=${turno}/data_0.parquet`);
+    const buffer = new Uint8Array(await res.arrayBuffer());
+    await db.registerFileBuffer(name, buffer);
+    registeredSecaoPartitions.add(name);
+  }
+  return name;
 }

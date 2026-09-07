@@ -129,7 +129,7 @@ export function MapView() {
           const nome = object.properties?.nm_mesorregiao;
           return {
             text: row
-              ? `${nome}\n${label}: ${row.votos} votos (${formatPct(row.share)})\nVotos válidos: ${row.total_validos}`
+              ? `${nome}\n${label}: ${row.votos} \n  Votos/Votos válidos: votos (${formatPct(row.share)})`
               : `${nome}`,
           };
         }

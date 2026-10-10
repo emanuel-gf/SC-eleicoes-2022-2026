@@ -41,10 +41,6 @@ interface Props {
 const selectStyle: React.CSSProperties = { width: "100%" };
 const labelStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
 const panelStyle: React.CSSProperties = {
-  position: "absolute",
-  top: 16,
-  left: 16,
-  zIndex: 10,
   background: "rgba(255,255,255,0.95)",
   borderRadius: 8,
   padding: 12,
@@ -55,6 +51,8 @@ const panelStyle: React.CSSProperties = {
   fontSize: 14,
   boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
   minWidth: 240,
+  maxWidth: "100%",
+  boxSizing: "border-box",
 };
 
 const numberFormat = new Intl.NumberFormat("pt-BR");

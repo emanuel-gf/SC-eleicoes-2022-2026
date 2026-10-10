@@ -1,4 +1,5 @@
 import * as duckdb from "@duckdb/duckdb-wasm";
+import { assetUrl } from "../assetUrl";
 import duckdbWasmMvp from "@duckdb/duckdb-wasm/dist/duckdb-mvp.wasm?url";
 import mvpWorker from "@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url";
 import duckdbWasmEh from "@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url";
@@ -33,7 +34,7 @@ async function fetchData(path: string): Promise<Uint8Array> {
 }
 
 async function registerParquet(db: duckdb.AsyncDuckDB, name: string) {
-  const buffer = await fetchData(`/data/${name}`);
+  const buffer = await fetchData(assetUrl(`data/${name}`));
   await db.registerFileBuffer(name, buffer);
 }
 
@@ -52,7 +53,9 @@ export function getDuckDB(): Promise<duckdb.AsyncDuckDB> {
       // e carregamos já aqui, pra qualquer falha aparecer no init.
       const conn = await db.connect();
       try {
-        await conn.query(`SET custom_extension_repository = '${window.location.origin}/duckdb-extensions'`);
+        // URL absoluta e sem barra no fim -- o DuckDB monta <repo>/v<versão>/<plataforma>/...
+        const extensionRepo = new URL(assetUrl("duckdb-extensions"), window.location.href).href.replace(/\/$/, "");
+        await conn.query(`SET custom_extension_repository = '${extensionRepo}'`);
         await conn.query("LOAD parquet");
       } finally {
         await conn.close();
@@ -81,7 +84,9 @@ export async function registerSecaoPartition(
 ): Promise<string> {
   const name = `secoes_${ano}_${cargoSlug}_${turno}.parquet`;
   if (!registeredSecaoPartitions.has(name)) {
-    const buffer = await fetchData(`/data/secoes/ano_eleicao=${ano}/cargo_slug=${cargoSlug}/turno=${turno}/data_0.parquet`);
+    const buffer = await fetchData(
+      assetUrl(`data/secoes/ano_eleicao=${ano}/cargo_slug=${cargoSlug}/turno=${turno}/data_0.parquet`),
+    );
     await db.registerFileBuffer(name, buffer);
     registeredSecaoPartitions.add(name);
   }

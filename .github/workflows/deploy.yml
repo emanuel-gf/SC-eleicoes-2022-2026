@@ -1,0 +1,67 @@
+# Build do mapa (web/) e publicação no GitHub Pages a cada push na main.
+#
+# Os dados que o site consome (web/public/data, web/public/geo,
+# web/public/duckdb-extensions) já vêm commitados -- gerados localmente pelos
+# scripts em scripts/ a partir dos arquivos do TSE, que NÃO estão no repo.
+# Por isso o CI só precisa de Node: nada de Python nem download do TSE aqui.
+# Atualizou dados? Rode os scripts localmente, commite web/public/ e dê push.
+#
+# Pré-requisito (uma vez só): Settings -> Pages -> Source: "GitHub Actions".
+
+name: Deploy no GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # permite rodar na mão pela aba Actions
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Um deploy por vez; um push novo cancela o deploy anterior ainda na fila.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      # O site fica em https://<usuário>.github.io/<repo>/ -- o Vite precisa
+      # saber esse prefixo pra montar os caminhos (ver web/src/assetUrl.ts).
+      - run: npm run build
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

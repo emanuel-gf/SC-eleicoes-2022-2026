@@ -13,6 +13,7 @@ import {
 } from "./layers";
 import { BASEMAPS, DEFAULT_BASEMAP } from "./basemaps";
 import { getDuckDB, registerSecaoPartition } from "../duckdb/client";
+import { assetUrl } from "../assetUrl";
 import {
   ANO_BASE,
   ANO_COMPARADO,
@@ -37,6 +38,7 @@ import {
 import { FilterPanel, type ViewMode } from "../ui/FilterPanel";
 import { ComparisonLegend } from "../ui/ComparisonLegend";
 import { BasemapSwitcher } from "../ui/BasemapSwitcher";
+import { ToggleControl } from "../ui/ToggleControl";
 import { ScaleToggleButton } from "../ui/ScaleToggleButton";
 import { anosDisponiveis, resolveComparison, resolveSelection } from "../ui/selection";
 
@@ -61,6 +63,14 @@ function formatPct(share: number | null | undefined): string {
 }
 
 const numberFormat = new Intl.NumberFormat("pt-BR");
+
+// Tela estreita (celular): filtros e mapa base começam escondidos, e abrir um
+// fecha o outro -- abertos juntos eles se sobrepõem (o seletor de mapa base
+// cobria o botão "Comparar").
+const NARROW_QUERY = "(max-width: 640px)";
+function isNarrowScreen(): boolean {
+  return typeof window !== "undefined" && window.matchMedia(NARROW_QUERY).matches;
+}
 const pctFormat = new Intl.NumberFormat("pt-BR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 function formatSigned(n: number): string {
@@ -100,6 +110,20 @@ export function MapView() {
   const [basemapId, setBasemapId] = useState(DEFAULT_BASEMAP.id);
   const [scaleVisible, setScaleVisible] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(() => !isNarrowScreen());
+  const [basemapOpen, setBasemapOpen] = useState(() => !isNarrowScreen());
+
+  function toggleFilters() {
+    const next = !filtersOpen;
+    setFiltersOpen(next);
+    if (next && isNarrowScreen()) setBasemapOpen(false);
+  }
+
+  function toggleBasemap() {
+    const next = !basemapOpen;
+    setBasemapOpen(next);
+    if (next && isNarrowScreen()) setFiltersOpen(false);
+  }
   // Modo comparação: estado próprio, separado da `selection` do modo
   // resultado -- voltar pro resultado restaura o que estava selecionado.
   const [view, setView] = useState<ViewMode>("resultado");
@@ -243,7 +267,7 @@ export function MapView() {
   // GeoJSON dos dois níveis poligonais -- independem do duckdb.
   useEffect(() => {
     let cancelled = false;
-    fetch("/geo/sc_municipios.geojson")
+    fetch(assetUrl("geo/sc_municipios.geojson"))
       .then((r) => r.json() as Promise<FeatureCollection>)
       .then((data) => {
         if (!cancelled) setMunicipiosGeojson(data);
@@ -255,7 +279,7 @@ export function MapView() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/geo/sc_mesorregioes.geojson")
+    fetch(assetUrl("geo/sc_mesorregioes.geojson"))
       .then((r) => r.json() as Promise<FeatureCollection>)
       .then((data) => {
         if (!cancelled) setMesorregioesGeojson(data);
@@ -402,22 +426,27 @@ export function MapView() {
   return (
     <>
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
-      <FilterPanel
-        candidatos={candidatos}
-        partidos={partidos}
-        selection={selection}
-        loadError={loadError}
-        onChange={setSelection}
-        view={view}
-        onViewChange={setView}
-        comparacoes={comparacoes}
-        comparison={comparison}
-        onComparisonChange={setComparison}
-      />
+      {/* Erro de carregamento abre o painel mesmo escondido -- não pode sumir calado. */}
+      <ToggleControl side="left" label="Filtros" open={filtersOpen || loadError != null} onToggle={toggleFilters}>
+        <FilterPanel
+          candidatos={candidatos}
+          partidos={partidos}
+          selection={selection}
+          loadError={loadError}
+          onChange={setSelection}
+          view={view}
+          onViewChange={setView}
+          comparacoes={comparacoes}
+          comparison={comparison}
+          onComparisonChange={setComparison}
+        />
+      </ToggleControl>
       {view === "comparacao" && comparison && legendDomain > 0 && (
         <ComparisonLegend metric={comparison.metric} domain={legendDomain} />
       )}
-      <BasemapSwitcher current={basemapId} onChange={setBasemapId} />
+      <ToggleControl side="right" label="Mapa base" open={basemapOpen} onToggle={toggleBasemap}>
+        <BasemapSwitcher current={basemapId} onChange={setBasemapId} />
+      </ToggleControl>
       <ScaleToggleButton visible={scaleVisible} onToggle={() => setScaleVisible((v) => !v)} />
     </>
   );

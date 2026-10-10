@@ -88,14 +88,15 @@ export function WelcomeModal({ onClose }: Props) {
           cargo.
         </p>
         <p style={{ margin: "0 0 12px" }}>
-          O mapa é <em>adaptativo</em> e ajusta conforme você dá zoom. Dê zoom para mudar a agregação a nível
+          O mapa é <strong>adaptativo e ajusta conforme você dá zoom</strong> . Dê zoom para mudar a agregação a nível
           municipal e dê mais zoom para ver o voto por seção eleitoral do TSE.
         </p>
          <p style={{ margin: "0 0 12px" }}>
-          Todos os candidatos que concorreram estão na lista, contudo os candidatos estão ordenados dado
-           o seu <em>nome de registro</em> ao invés do apelido utilizado durante a campanha.
+          Todos os candidatos que concorreram estão na lista, contudo, os candidatos estão ordenados dado
+           o seu <strong>nome de registro</strong> ao invés do apelido utilizado durante a campanha.
         </p>
-        <p style={{ margin: "0 0 20px" }}>No mapa comparativo, a máxima granularidade é a nível municipal apenas.</p>
+        <p style={{ margin: "0 0 20px" }}>No mapa comparativo, a máxima granularidade é a nível municipal.</p>
+        <p style={{ margin: "0 0 20px" }}>Elaborado por: <em>Emanuel Goulart</em>.</p>
 
         <button
           ref={closeButtonRef}

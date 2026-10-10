@@ -75,6 +75,9 @@ export function ComparisonLegend({ metric, domain }: Props) {
       {metric === "diff" && (
         // Diferença absoluta é desenhada com curva raiz (ver diffIntensity em
         // layers.ts): o meio de cada lado da barra vale 1/4 do máximo, não 1/2.
+        <div style={{ marginTop: 4, color: "#898781" }}>
+          
+        </div>
       )}
     </div>
   );

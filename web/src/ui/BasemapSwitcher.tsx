@@ -12,6 +12,7 @@ export function BasemapSwitcher({ current, onChange }: Props) {
         position: "absolute",
         top: 16,
         right: 16,
+        zIndex: 10,
         background: "rgba(255,255,255,0.95)",
         borderRadius: 8,
         padding: 8,

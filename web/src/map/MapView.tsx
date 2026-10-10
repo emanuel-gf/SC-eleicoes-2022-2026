@@ -4,30 +4,41 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import type { FeatureCollection } from "geojson";
 import {
+  buildComparacaoLayer,
   buildMesorregiaoLayer,
   buildMunicipioLayer,
   buildMunicipioOutlineLayer,
   buildSecaoLayer,
+  comparacaoDomain,
 } from "./layers";
 import { BASEMAPS, DEFAULT_BASEMAP } from "./basemaps";
 import { getDuckDB, registerSecaoPartition } from "../duckdb/client";
 import {
+  ANO_BASE,
+  ANO_COMPARADO,
   CARGO_SLUGS,
   fetchCandidatos,
+  fetchComparacaoRows,
+  fetchComparacoes,
   fetchMesorregiaoShares,
   fetchMunicipioShares,
   fetchPartidos,
   fetchSecaoShares,
   type Candidato,
+  type Comparacao,
+  type ComparacaoRow,
+  type ComparisonSelection,
   type FilterSelection,
   type MesorregiaoShare,
   type MunicipioShare,
   type Partido,
   type SecaoShare,
 } from "../duckdb/queries";
-import { FilterPanel } from "../ui/FilterPanel";
+import { FilterPanel, type ViewMode } from "../ui/FilterPanel";
+import { ComparisonLegend } from "../ui/ComparisonLegend";
 import { BasemapSwitcher } from "../ui/BasemapSwitcher";
 import { ScaleToggleButton } from "../ui/ScaleToggleButton";
+import { anosDisponiveis, resolveComparison, resolveSelection } from "../ui/selection";
 
 const SC_CENTER: [number, number] = [-50.5, -27.3];
 const SC_ZOOM = 6.6;
@@ -49,6 +60,28 @@ function formatPct(share: number | null | undefined): string {
   return share != null ? `${(share * 100).toFixed(1)}%` : "sem dados";
 }
 
+const numberFormat = new Intl.NumberFormat("pt-BR");
+const pctFormat = new Intl.NumberFormat("pt-BR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+function formatSigned(n: number): string {
+  return `${n > 0 ? "+" : n < 0 ? "−" : ""}${numberFormat.format(Math.abs(n))}`;
+}
+
+function comparacaoTooltip(nome: string, pessoa: string, row: ComparacaoRow | undefined): string {
+  if (!row) return `${nome}\n${pessoa}: sem votos em ${ANO_BASE} nem ${ANO_COMPARADO}`;
+  const pct =
+    row.pct == null
+      ? row.votos_2026 > 0
+        ? "novo -- 0 votos em 2022"
+        : "sem votos"
+      : `${row.pct > 0 ? "+" : row.pct < 0 ? "−" : ""}${pctFormat.format(Math.abs(row.pct))}`;
+  return (
+    `${nome}\n${pessoa}\n` +
+    `${ANO_BASE}: ${numberFormat.format(row.votos_2022)} · ${ANO_COMPARADO}: ${numberFormat.format(row.votos_2026)} votos\n` +
+    `Diferença: ${formatSigned(row.diff)} (${pct})`
+  );
+}
+
 export function MapView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -66,6 +99,20 @@ export function MapView() {
   const [tier, setTier] = useState<ZoomTier>(tierForZoom(SC_ZOOM));
   const [basemapId, setBasemapId] = useState(DEFAULT_BASEMAP.id);
   const [scaleVisible, setScaleVisible] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Modo comparação: estado próprio, separado da `selection` do modo
+  // resultado -- voltar pro resultado restaura o que estava selecionado.
+  const [view, setView] = useState<ViewMode>("resultado");
+  const [comparacoes, setComparacoes] = useState<Comparacao[]>([]);
+  const [comparison, setComparison] = useState<ComparisonSelection | null>(null);
+  const [comparacaoMunicipio, setComparacaoMunicipio] = useState<Map<number, ComparacaoRow> | null>(null);
+  const [comparacaoMesorregiao, setComparacaoMesorregiao] = useState<Map<number, ComparacaoRow> | null>(null);
+
+  // Comparação não tem nível de seção (seções mudam de lugar entre eleições,
+  // e o geocode de 2022 ainda tem locais fora do município) -- no zoom alto
+  // continua mostrando município.
+  const effectiveTier: ZoomTier = view === "comparacao" && tier === "secao" ? "municipio" : tier;
+  const pessoaAtual = comparacoes.find((c) => c.id_pessoa === comparison?.idPessoa) ?? null;
 
   // Refs espelhando o estado usado pelo getTooltip -- o callback é criado uma
   // vez só (na criação do overlay) então precisa ler do ref, não do closure,
@@ -73,6 +120,16 @@ export function MapView() {
   const municipioSharesRef = useRef(municipioShares);
   const mesorregiaoSharesRef = useRef(mesorregiaoShares);
   const selectionRef = useRef(selection);
+  const viewRef = useRef(view);
+  const pessoaAtualRef = useRef(pessoaAtual);
+  const comparacaoMunicipioRef = useRef(comparacaoMunicipio);
+  const comparacaoMesorregiaoRef = useRef(comparacaoMesorregiao);
+  useEffect(() => {
+    viewRef.current = view;
+    pessoaAtualRef.current = pessoaAtual;
+    comparacaoMunicipioRef.current = comparacaoMunicipio;
+    comparacaoMesorregiaoRef.current = comparacaoMesorregiao;
+  }, [view, pessoaAtual, comparacaoMunicipio, comparacaoMesorregiao]);
   useEffect(() => {
     municipioSharesRef.current = municipioShares;
   }, [municipioShares]);
@@ -105,7 +162,24 @@ export function MapView() {
       layers: [],
       getTooltip: ({ object, layer }) => {
         if (!object) return null;
-        const label = selectionRef.current?.label ?? "";
+
+        if (viewRef.current === "comparacao") {
+          const pessoa = pessoaAtualRef.current?.nome_2026 ?? "";
+          if (layer?.id === "municipios") {
+            const cd = object.properties?.cd_municipio_tse as number | undefined;
+            const row = cd != null ? comparacaoMunicipioRef.current?.get(cd) : undefined;
+            return { text: comparacaoTooltip(object.properties?.nm_municipio_ibge, pessoa, row) };
+          }
+          if (layer?.id === "mesorregioes") {
+            const cd = object.properties?.cd_mesorregiao as number | undefined;
+            const row = cd != null ? comparacaoMesorregiaoRef.current?.get(cd) : undefined;
+            return { text: comparacaoTooltip(object.properties?.nm_mesorregiao, pessoa, row) };
+          }
+          return null;
+        }
+
+        const sel = selectionRef.current;
+        const label = sel ? `${sel.label} (${sel.ano})` : "";
 
         if (layer?.id === "secoes") {
           const s = object as SecaoShare;
@@ -192,26 +266,29 @@ export function MapView() {
   }, []);
 
   // Inicializa o DuckDB-WASM e carrega candidatos + partidos; seleciona o
-  // primeiro candidato por padrão pra já mostrar algo no mapa.
+  // primeiro candidato da eleição mais recente por padrão pra já mostrar algo no mapa.
   useEffect(() => {
     let cancelled = false;
     getDuckDB()
-      .then((db) => Promise.all([fetchCandidatos(db), fetchPartidos(db)]))
-      .then(([candidatoRows, partidoRows]) => {
+      .then((db) => Promise.all([fetchCandidatos(db), fetchPartidos(db), fetchComparacoes(db)]))
+      .then(([candidatoRows, partidoRows, comparacaoRows]) => {
         if (cancelled) return;
         setCandidatos(candidatoRows);
         setPartidos(partidoRows);
-        if (candidatoRows.length > 0) {
-          const first = candidatoRows[0];
-          setSelection({
-            mode: "candidato",
-            cdCargo: first.cd_cargo,
-            dsCargo: first.ds_cargo,
-            turno: first.turno,
-            value: first.nr_votavel,
-            label: first.nm_votavel,
-          });
+        setComparacoes(comparacaoRows);
+        setComparison(resolveComparison(comparacaoRows, {}));
+        const [anoMaisRecente] = anosDisponiveis(candidatoRows);
+        if (anoMaisRecente != null) {
+          setSelection(resolveSelection(candidatoRows, partidoRows, { mode: "candidato", ano: anoMaisRecente }));
+        } else {
+          setLoadError("candidatos.parquet veio vazio -- rodar scripts/build_aggregates.py");
         }
+      })
+      .catch((err: unknown) => {
+        // Sem isso o painel de filtro simplesmente some (ele só renderiza com
+        // uma seleção) e o erro fica escondido no console.
+        console.error("Falha ao carregar os dados no DuckDB", err);
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
@@ -237,32 +314,65 @@ export function MapView() {
     };
   }, [selection]);
 
-  // Seção eleitoral só carrega quando o zoom pede o nível de detalhe máximo --
-  // a partição certa (cargo/turno) é registrada sob demanda no DuckDB.
+  // Comparação: votos da pessoa nos dois anos por município e mesorregião.
   useEffect(() => {
-    if (!selection || tier !== "secao") return;
+    if (view !== "comparacao" || !pessoaAtual) return;
+    let cancelled = false;
+    getDuckDB().then(async (db) => {
+      const [muni, meso] = await Promise.all([
+        fetchComparacaoRows(db, "municipio", pessoaAtual),
+        fetchComparacaoRows(db, "mesorregiao", pessoaAtual),
+      ]);
+      if (cancelled) return;
+      setComparacaoMunicipio(new Map(muni.map((r) => [r.cd, r])));
+      setComparacaoMesorregiao(new Map(meso.map((r) => [r.cd, r])));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, pessoaAtual]);
+
+  // Seção eleitoral só carrega quando o zoom pede o nível de detalhe máximo --
+  // a partição certa (ano/cargo/turno) é registrada sob demanda no DuckDB.
+  useEffect(() => {
+    if (!selection || effectiveTier !== "secao") return;
     const cargoSlug = CARGO_SLUGS[selection.dsCargo];
     if (!cargoSlug) return;
     let cancelled = false;
     getDuckDB().then(async (db) => {
-      const file = await registerSecaoPartition(db, cargoSlug, selection.turno);
+      const file = await registerSecaoPartition(db, selection.ano, cargoSlug, selection.turno);
       const rows = await fetchSecaoShares(db, file, selection);
       if (!cancelled) setSecaoShares(rows);
     });
     return () => {
       cancelled = true;
     };
-  }, [selection, tier]);
+  }, [selection, effectiveTier]);
 
   // Redesenha só a(s) camada(s) do nível de zoom atual. No nível de seção, o
   // contorno dos municípios entra por baixo dos pontos pra dar referência de
   // "em qual cidade" cada um está.
   useEffect(() => {
     if (!overlayRef.current) return;
-    if (tier === "mesorregiao") {
+    if (view === "comparacao") {
+      const metric = comparison?.metric ?? "diff";
+      if (effectiveTier === "mesorregiao") {
+        if (!mesorregioesGeojson) return;
+        overlayRef.current.setProps({
+          layers: [buildComparacaoLayer("mesorregiao", mesorregioesGeojson, comparacaoMesorregiao, metric)],
+        });
+      } else {
+        if (!municipiosGeojson) return;
+        overlayRef.current.setProps({
+          layers: [buildComparacaoLayer("municipio", municipiosGeojson, comparacaoMunicipio, metric)],
+        });
+      }
+      return;
+    }
+    if (effectiveTier === "mesorregiao") {
       if (!mesorregioesGeojson) return;
       overlayRef.current.setProps({ layers: [buildMesorregiaoLayer(mesorregioesGeojson, mesorregiaoShares)] });
-    } else if (tier === "municipio") {
+    } else if (effectiveTier === "municipio") {
       if (!municipiosGeojson) return;
       overlayRef.current.setProps({ layers: [buildMunicipioLayer(municipiosGeojson, municipioShares)] });
     } else {
@@ -271,12 +381,42 @@ export function MapView() {
       layers.push(buildSecaoLayer(secaoShares ?? []));
       overlayRef.current.setProps({ layers });
     }
-  }, [tier, municipiosGeojson, mesorregioesGeojson, municipioShares, mesorregiaoShares, secaoShares]);
+  }, [
+    view,
+    comparison,
+    effectiveTier,
+    municipiosGeojson,
+    mesorregioesGeojson,
+    municipioShares,
+    mesorregiaoShares,
+    secaoShares,
+    comparacaoMunicipio,
+    comparacaoMesorregiao,
+  ]);
+
+  const legendDomain =
+    view === "comparacao" && comparison
+      ? comparacaoDomain(effectiveTier === "mesorregiao" ? comparacaoMesorregiao : comparacaoMunicipio, comparison.metric)
+      : 0;
 
   return (
     <>
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
-      <FilterPanel candidatos={candidatos} partidos={partidos} selection={selection} onChange={setSelection} />
+      <FilterPanel
+        candidatos={candidatos}
+        partidos={partidos}
+        selection={selection}
+        loadError={loadError}
+        onChange={setSelection}
+        view={view}
+        onViewChange={setView}
+        comparacoes={comparacoes}
+        comparison={comparison}
+        onComparisonChange={setComparison}
+      />
+      {view === "comparacao" && comparison && legendDomain > 0 && (
+        <ComparisonLegend metric={comparison.metric} domain={legendDomain} />
+      )}
       <BasemapSwitcher current={basemapId} onChange={setBasemapId} />
       <ScaleToggleButton visible={scaleVisible} onToggle={() => setScaleVisible((v) => !v)} />
     </>

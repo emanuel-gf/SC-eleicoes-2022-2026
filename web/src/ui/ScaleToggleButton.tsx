@@ -13,7 +13,7 @@ export function ScaleToggleButton({ visible, onToggle }: Props) {
         position: "absolute",
         bottom: 16,
         left: 16,
-        zIndex: 1,
+        zIndex: 10,
         background: "rgba(255,255,255,0.95)",
         border: "none",
         borderRadius: 8,

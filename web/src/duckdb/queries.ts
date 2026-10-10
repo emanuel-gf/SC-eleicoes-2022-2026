@@ -40,6 +40,7 @@ export type FilterMode = "candidato" | "partido";
 // zoom/tooltip/camada em dois caminhos separados.
 export interface FilterSelection {
   mode: FilterMode;
+  ano: number;
   cdCargo: number;
   dsCargo: string;
   turno: number;
@@ -48,7 +49,7 @@ export interface FilterSelection {
 }
 
 // Mesmo slug do scripts/build_aggregates.py -- usado só pra montar o caminho
-// da partição de seções (`secoes/cargo_slug=<slug>/turno=<n>/*.parquet`).
+// da partição de seções (`secoes/ano_eleicao=<ano>/cargo_slug=<slug>/turno=<n>/*.parquet`).
 export const CARGO_SLUGS: Record<string, string> = {
   Governador: "governador",
   Senador: "senador",
@@ -85,7 +86,7 @@ export async function fetchCandidatos(db: AsyncDuckDB): Promise<Candidato[]> {
     const result = await conn.query(`
       SELECT ano_eleicao, turno, cd_cargo, ds_cargo, nr_votavel, nm_votavel, nr_partido, sg_partido, nm_partido
       FROM read_parquet('candidatos.parquet')
-      ORDER BY cd_cargo, turno, nr_votavel
+      ORDER BY ano_eleicao, cd_cargo, turno, nr_votavel
     `);
     return result.toArray().map((row) => rowToPlainObject<Candidato>(row.toJSON()));
   } finally {
@@ -99,7 +100,7 @@ export async function fetchPartidos(db: AsyncDuckDB): Promise<Partido[]> {
     const result = await conn.query(`
       SELECT ano_eleicao, turno, cd_cargo, ds_cargo, nr_partido, sg_partido, nm_partido
       FROM read_parquet('partidos.parquet')
-      ORDER BY cd_cargo, turno, sg_partido
+      ORDER BY ano_eleicao, cd_cargo, turno, sg_partido
     `);
     return result.toArray().map((row) => rowToPlainObject<Partido>(row.toJSON()));
   } finally {
@@ -121,7 +122,7 @@ function columnFor(mode: FilterMode): "nr_votavel" | "nr_partido" {
 // (não tem nr_partido) então o filtro NOT IN só importa no modo candidato.
 export async function fetchMunicipioShares(
   db: AsyncDuckDB,
-  { mode, cdCargo, turno, value }: FilterSelection,
+  { mode, ano, cdCargo, turno, value }: FilterSelection,
 ): Promise<MunicipioShare[]> {
   const conn = await db.connect();
   try {
@@ -132,13 +133,13 @@ export async function fetchMunicipioShares(
       WITH totals AS (
         SELECT cd_municipio_tse, SUM(qt_votos) AS total_validos
         FROM read_parquet('${file}')
-        WHERE cd_cargo = ? AND turno = ? ${excludeBrancoNulo}
+        WHERE ano_eleicao = ? AND cd_cargo = ? AND turno = ? ${excludeBrancoNulo}
         GROUP BY cd_municipio_tse
       ),
       sel AS (
         SELECT cd_municipio_tse, SUM(qt_votos) AS votos
         FROM read_parquet('${file}')
-        WHERE cd_cargo = ? AND turno = ? AND ${col} = ?
+        WHERE ano_eleicao = ? AND cd_cargo = ? AND turno = ? AND ${col} = ?
         GROUP BY cd_municipio_tse
       )
       SELECT
@@ -149,7 +150,7 @@ export async function fetchMunicipioShares(
       FROM totals t
       LEFT JOIN sel s USING (cd_municipio_tse)
     `);
-    const result = await stmt.query(cdCargo, turno, cdCargo, turno, value);
+    const result = await stmt.query(ano, cdCargo, turno, ano, cdCargo, turno, value);
     return result.toArray().map((row) => rowToPlainObject<MunicipioShare>(row.toJSON()));
   } finally {
     await conn.close();
@@ -158,7 +159,7 @@ export async function fetchMunicipioShares(
 
 export async function fetchMesorregiaoShares(
   db: AsyncDuckDB,
-  { mode, cdCargo, turno, value }: FilterSelection,
+  { mode, ano, cdCargo, turno, value }: FilterSelection,
 ): Promise<MesorregiaoShare[]> {
   const conn = await db.connect();
   try {
@@ -169,13 +170,13 @@ export async function fetchMesorregiaoShares(
       WITH totals AS (
         SELECT cd_mesorregiao, SUM(qt_votos) AS total_validos
         FROM read_parquet('${file}')
-        WHERE cd_cargo = ? AND turno = ? ${excludeBrancoNulo}
+        WHERE ano_eleicao = ? AND cd_cargo = ? AND turno = ? ${excludeBrancoNulo}
         GROUP BY cd_mesorregiao
       ),
       sel AS (
         SELECT cd_mesorregiao, SUM(qt_votos) AS votos
         FROM read_parquet('${file}')
-        WHERE cd_cargo = ? AND turno = ? AND ${col} = ?
+        WHERE ano_eleicao = ? AND cd_cargo = ? AND turno = ? AND ${col} = ?
         GROUP BY cd_mesorregiao
       )
       SELECT
@@ -186,7 +187,7 @@ export async function fetchMesorregiaoShares(
       FROM totals t
       LEFT JOIN sel s USING (cd_mesorregiao)
     `);
-    const result = await stmt.query(cdCargo, turno, cdCargo, turno, value);
+    const result = await stmt.query(ano, cdCargo, turno, ano, cdCargo, turno, value);
     return result.toArray().map((row) => rowToPlainObject<MesorregiaoShare>(row.toJSON()));
   } finally {
     await conn.close();
@@ -194,8 +195,8 @@ export async function fetchMesorregiaoShares(
 }
 
 // `secaoFile` é o nome virtual já registrado no DuckDB (ver client.ts) pra
-// partição cargo_slug/turno da seleção atual -- o arquivo já vem filtrado por
-// cargo/turno pelo particionamento em disco e já tem nr_partido, então tanto
+// partição ano/cargo_slug/turno da seleção atual -- o arquivo já vem filtrado por
+// ano/cargo/turno pelo particionamento em disco e já tem nr_partido, então tanto
 // modo candidato quanto partido usam o mesmo arquivo.
 export async function fetchSecaoShares(
   db: AsyncDuckDB,
@@ -235,6 +236,96 @@ export async function fetchSecaoShares(
     `);
     const result = await stmt.query(value);
     return result.toArray().map((row) => rowToPlainObject<SecaoShare>(row.toJSON()));
+  } finally {
+    await conn.close();
+  }
+}
+
+// --- Comparação 2022 -> 2026 ---------------------------------------------
+// `comparacao_candidatos.parquet` (scripts/build_aggregates.py) já traz quem
+// concorreu ao MESMO cargo nos dois anos, casado por CPF (o CPF em si não vem
+// pro site -- só `id_pessoa`). O número de urna pode ter mudado entre os anos,
+// por isso cada ano tem o seu (`nr_2022`/`nr_2026`).
+export const ANO_BASE = 2022;
+export const ANO_COMPARADO = 2026;
+
+export interface Comparacao {
+  id_pessoa: number;
+  cd_cargo: number;
+  ds_cargo: string;
+  nr_2022: number;
+  nr_2026: number;
+  nome_2022: string;
+  nome_2026: string;
+  sg_partido_2022: string | null;
+  sg_partido_2026: string | null;
+  votos_2022: number;
+  votos_2026: number;
+}
+
+export type ComparacaoMetric = "diff" | "pct";
+
+export interface ComparisonSelection {
+  cdCargo: number;
+  idPessoa: number;
+  metric: ComparacaoMetric;
+}
+
+export interface ComparacaoRow {
+  cd: number;
+  votos_2022: number;
+  votos_2026: number;
+  diff: number;
+  // null quando não teve voto em 2022 (variação % indefinida -- "novo").
+  pct: number | null;
+}
+
+export async function fetchComparacoes(db: AsyncDuckDB): Promise<Comparacao[]> {
+  const conn = await db.connect();
+  try {
+    const result = await conn.query(`
+      SELECT * FROM read_parquet('comparacao_candidatos.parquet') ORDER BY cd_cargo, nome_2026
+    `);
+    return result.toArray().map((row) => rowToPlainObject<Comparacao>(row.toJSON()));
+  } finally {
+    await conn.close();
+  }
+}
+
+// Votos da mesma pessoa nos dois anos por unidade (1º turno vs 1º turno), a
+// partir dos agregados que o modo "resultado" já usa. FULL OUTER JOIN: uma
+// unidade onde ela só teve voto num dos anos aparece com 0 no outro.
+export async function fetchComparacaoRows(
+  db: AsyncDuckDB,
+  level: "municipio" | "mesorregiao",
+  comparacao: Pick<Comparacao, "cd_cargo" | "nr_2022" | "nr_2026">,
+): Promise<ComparacaoRow[]> {
+  const conn = await db.connect();
+  try {
+    const key = level === "municipio" ? "cd_municipio_tse" : "cd_mesorregiao";
+    const stmt = await conn.prepare(`
+      WITH base AS (
+        SELECT ${key} AS cd, SUM(qt_votos) AS votos FROM read_parquet('agg_${level}.parquet')
+        WHERE ano_eleicao = ${ANO_BASE} AND turno = 1 AND cd_cargo = ? AND nr_votavel = ?
+        GROUP BY 1
+      ),
+      comparado AS (
+        SELECT ${key} AS cd, SUM(qt_votos) AS votos FROM read_parquet('agg_${level}.parquet')
+        WHERE ano_eleicao = ${ANO_COMPARADO} AND turno = 1 AND cd_cargo = ? AND nr_votavel = ?
+        GROUP BY 1
+      )
+      SELECT
+        COALESCE(b.cd, c.cd) AS cd,
+        COALESCE(b.votos, 0) AS votos_2022,
+        COALESCE(c.votos, 0) AS votos_2026,
+        COALESCE(c.votos, 0) - COALESCE(b.votos, 0) AS diff,
+        (COALESCE(c.votos, 0) - b.votos)::DOUBLE / NULLIF(b.votos, 0) AS pct
+      FROM base b
+      FULL OUTER JOIN comparado c ON b.cd = c.cd
+    `);
+    const { cd_cargo, nr_2022, nr_2026 } = comparacao;
+    const result = await stmt.query(cd_cargo, nr_2022, cd_cargo, nr_2026);
+    return result.toArray().map((row) => rowToPlainObject<ComparacaoRow>(row.toJSON()));
   } finally {
     await conn.close();
   }

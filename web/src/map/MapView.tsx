@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { MapboxOverlay } from "@deck.gl/mapbox";
@@ -39,6 +39,7 @@ import { FilterPanel, type ViewMode } from "../ui/FilterPanel";
 import { ComparisonLegend } from "../ui/ComparisonLegend";
 import { BasemapSwitcher } from "../ui/BasemapSwitcher";
 import { ToggleControl } from "../ui/ToggleControl";
+import { WelcomeModal } from "../ui/WelcomeModal";
 import { ScaleToggleButton } from "../ui/ScaleToggleButton";
 import { anosDisponiveis, resolveComparison, resolveSelection } from "../ui/selection";
 
@@ -110,8 +111,13 @@ export function MapView() {
   const [basemapId, setBasemapId] = useState(DEFAULT_BASEMAP.id);
   const [scaleVisible, setScaleVisible] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [welcomeOpen, setWelcomeOpen] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(() => !isNarrowScreen());
   const [basemapOpen, setBasemapOpen] = useState(() => !isNarrowScreen());
+
+  // Estável entre renders: o efeito do modal (foco + listener de Esc) depende
+  // dela e não pode re-rodar a cada render do mapa (roubaria o foco).
+  const closeWelcome = useCallback(() => setWelcomeOpen(false), []);
 
   function toggleFilters() {
     const next = !filtersOpen;
@@ -448,6 +454,7 @@ export function MapView() {
         <BasemapSwitcher current={basemapId} onChange={setBasemapId} />
       </ToggleControl>
       <ScaleToggleButton visible={scaleVisible} onToggle={() => setScaleVisible((v) => !v)} />
+      {welcomeOpen && <WelcomeModal onClose={closeWelcome} />}
     </>
   );
 }
